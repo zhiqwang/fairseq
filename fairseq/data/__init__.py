@@ -23,6 +23,7 @@ from .round_robin_zip_datasets import RoundRobinZipDatasets
 from .token_block_dataset import TokenBlockDataset
 from .transform_eos_dataset import TransformEosDataset
 from .transform_eos_lang_pair_dataset import TransformEosLangPairDataset
+from .text_recognition_dataset import TextRecognitionDataset
 
 from .iterators import (
     CountingIterator,
@@ -57,4 +58,5 @@ __all__ = [
     'TransformEosDataset',
     'TransformEosLangPairDataset',
     'TruncatedDictionary',
+    'TextRecognitionDataset',
 ]
