@@ -71,19 +71,16 @@ class CRNNModel(FairseqEncoderDecoderModel):
         """
         Run the forward pass for an encoder-decoder model.
 
-        First feed a batch of source tokens through the encoder. Then, feed the
+        First feed a batch of source image through the encoder. Then, feed the
         encoder output and previous decoder outputs (i.e., input feeding/teacher
         forcing) to the decoder to produce the next outputs::
 
-            encoder_out = self.encoder(src_tokens, src_lengths)
-            return self.decoder(prev_output_tokens, encoder_out)
+            encoder_out = self.encoder(image)
+            return self.decoder(encoder_out)
 
         Args:
-            src_tokens (LongTensor): tokens in the source language of shape
-                `(batch, src_len)`
-            src_lengths (LongTensor): source sentence lengths of shape `(batch)`
-            prev_output_tokens (LongTensor): previous decoder outputs of shape
-                `(batch, tgt_len)`, for input feeding/teacher forcing
+            image (Tensor): tokens in the source image of shape
+                `(batch, channel, img_h, img_w)`
 
         Returns:
             the decoder's output, typically of shape `(tgt_len, batch, vocab)`
@@ -103,6 +100,16 @@ class CRNNEncoder(FairseqEncoder):
         self.hidden_size = OUTPUT_DIM[backbone]
 
     def forward(self, images):
+        """
+        Args:
+            images (Tensor): tokens in the source images of shape
+                `(batch, channel, img_h, img_w)`
+
+        Returns:
+            dict:
+                - **encoder_out** (Tensor): the last encoder layer's output of
+                  shape `(src_len, batch, embed_dim)`
+        """
         # images -> features
         x = self.features(images)
         # features -> pool -> flatten
