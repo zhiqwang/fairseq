@@ -1,3 +1,4 @@
+import torch
 import torch.nn as nn
 
 from fairseq import utils
@@ -58,7 +59,7 @@ class CRNNModel(FairseqEncoderDecoderModel):
         # make sure that all args are properly defaulted (in case there are any new ones)
         base_architecture(args)
         encoder = CRNNEncoder(args.backbone, args.pretrained)
-        decoder = CRNNDecoder(task.target_dictionary, encoder.hidden_size)
+        decoder = CRNNDecoder(task.target_dictionary, encoder.embed_dim)
         return cls(encoder, decoder)
 
     def __init__(self, encoder, decoder):
@@ -95,9 +96,10 @@ class CRNNEncoder(FairseqEncoder):
     """CRNN encoder."""
     def __init__(self, backbone, pretrained):
         super(FairseqEncoder, self).__init__()
+        self.embed_dim = OUTPUT_DIM[backbone]
+        self.position_embeddings = nn.Embedding(self.max_positions(), self.embed_dim)
         self.features = nn.Sequential(*self.cnn_backbone(backbone, pretrained))
         self.avgpool = nn.AdaptiveAvgPool2d((1, None))
-        self.hidden_size = OUTPUT_DIM[backbone]
 
     def forward(self, images):
         """
@@ -111,13 +113,22 @@ class CRNNEncoder(FairseqEncoder):
                   shape `(src_len, batch, embed_dim)`
         """
         # images -> features
-        x = self.features(images)
+        x = self.features(images)  # B x C x H' x W', where W' stands for `seq_len`
         # features -> pool -> flatten
         x = self.avgpool(x)
-        x = x.permute(3, 0, 1, 2).view(x.size(3), x.size(0), -1)
+        x = x.permute(3, 0, 1, 2).view(x.size(3), x.size(0), -1)  # W' x B x C
+
+        if self.position_embeddings is not None:
+            positions = torch.arange(len(x), device=x.device).unsqueeze(-1)
+            x = x + self.position_embeddings(positions).expand_as(x)
+
         return {
             'encoder_out': x,  # T x B x C
         }
+
+    def max_positions(self):
+        """Maximum sequence length supported by the encoder."""
+        return 128
 
     @staticmethod
     def cnn_backbone(backbone, pretrained):
@@ -155,9 +166,9 @@ class CRNNEncoder(FairseqEncoder):
 
 class CRNNDecoder(FairseqDecoder):
     """CRNN decoder."""
-    def __init__(self, dictionary, hidden_size):
+    def __init__(self, dictionary, embed_dim):
         super().__init__(dictionary)
-        self.classifier = nn.Linear(hidden_size, len(dictionary))
+        self.classifier = nn.Linear(embed_dim, len(dictionary))
 
     def forward(self, encoder_out):
         # encoder_out -> decoder
