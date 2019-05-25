@@ -75,9 +75,12 @@ class progress_bar(object):
         self.epoch = epoch
         self.prefix = ''
         if epoch is not None:
-            self.prefix += '| epoch {:03d} '.format(epoch)
+            self.prefix += '| epoch {:03d}'.format(epoch)
         if prefix is not None:
-            self.prefix += '| {}'.format(prefix)
+            if epoch is not None:
+                self.prefix += ' | {}'.format(prefix)
+            else:
+                self.prefix += '| {}'.format(prefix)
 
     def __enter__(self):
         return self

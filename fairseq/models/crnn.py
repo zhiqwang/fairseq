@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 from fairseq import utils
 from fairseq.models import (
@@ -44,13 +45,20 @@ class CRNNModel(FairseqEncoderDecoderModel):
         :prog:
     """
 
+    def __init__(self, encoder, decoder):
+        super().__init__(encoder, decoder)
+
     @staticmethod
     def add_args(parser):
         """Add model-specific arguments to the parser."""
         # fmt: off
+        parser.add_argument('--dropout', type=float, metavar='D',
+                            help='dropout probability')
         parser.add_argument('--backbone', default='densenet_cifar',
                             help='CNN backbone architecture. (default: densenet_cifar)')
         parser.add_argument('--pretrained', action='store_true', help='pretrained')
+        parser.add_argument('--decoder-layers', type=int, metavar='N',
+                            help='number of decoder layers')
         # fmt: on
 
     @classmethod
@@ -59,14 +67,13 @@ class CRNNModel(FairseqEncoderDecoderModel):
         # make sure that all args are properly defaulted (in case there are any new ones)
         base_architecture(args)
         encoder = CRNNEncoder(args.backbone, args.pretrained)
-        decoder = CRNNDecoder(task.target_dictionary, encoder.embed_dim)
+        decoder = CRNNDecoder(
+            dictionary=task.target_dictionary,
+            embed_dim=encoder.embed_dim,
+            num_layers=args.decoder_layers,
+            bidirectional=True,
+        )
         return cls(encoder, decoder)
-
-    def __init__(self, encoder, decoder):
-        super(FairseqEncoderDecoderModel, self).__init__()
-
-        self.encoder = encoder
-        self.decoder = decoder
 
     def forward(self, image):
         """
@@ -98,25 +105,25 @@ class CRNNEncoder(FairseqEncoder):
         super(FairseqEncoder, self).__init__()
         self.embed_dim = OUTPUT_DIM[backbone]
         self.position_embeddings = nn.Embedding(self.max_positions(), self.embed_dim)
-        self.features = nn.Sequential(*self.cnn_backbone(backbone, pretrained))
+        self.features = nn.Sequential(*self.cnn_layers(backbone, pretrained))
         self.avgpool = nn.AdaptiveAvgPool2d((1, None))
 
     def forward(self, images):
         """
         Args:
             images (Tensor): tokens in the source images of shape
-                `(batch, channel, img_h, img_w)`
+                `(bsz, channel, img_h, img_w)`
 
         Returns:
             dict:
                 - **encoder_out** (Tensor): the last encoder layer's output of
-                  shape `(src_len, batch, embed_dim)`
+                  shape `(src_len, bsz, embed_dim)`
         """
         # images -> features
-        x = self.features(images)  # B x C x H' x W', where W' stands for `seq_len`
+        x = self.features(images)  # bsz x embed_dim x H' x W', where W' stands for `seq_len`
         # features -> pool -> flatten
         x = self.avgpool(x)
-        x = x.permute(3, 0, 1, 2).view(x.size(3), x.size(0), -1)  # W' x B x C
+        x = x.permute(3, 0, 1, 2).view(x.size(3), x.size(0), -1)  # seq_len x bsz x embed_dim
 
         if self.position_embeddings is not None:
             positions = torch.arange(len(x), device=x.device).unsqueeze(-1)
@@ -131,7 +138,7 @@ class CRNNEncoder(FairseqEncoder):
         return 128
 
     @staticmethod
-    def cnn_backbone(backbone, pretrained):
+    def cnn_layers(backbone, pretrained):
         """CNN backbone for the CRNN Encoder."""
 
         # loading network
@@ -166,15 +173,57 @@ class CRNNEncoder(FairseqEncoder):
 
 class CRNNDecoder(FairseqDecoder):
     """CRNN decoder."""
-    def __init__(self, dictionary, embed_dim):
+    def __init__(
+        self, dictionary, embed_dim, hidden_size=512,
+        num_layers=1, attention=None, bidirectional=False,
+    ):
         super().__init__(dictionary)
-        self.classifier = nn.Linear(embed_dim, len(dictionary))
+        self.hidden_size = hidden_size
+        self.bidirectional = bidirectional
+
+        encoder_hidden_size = hidden_size * num_layers
+        if bidirectional:
+            encoder_hidden_size *= 2
+        self.encoder_hidden = nn.Linear(embed_dim, encoder_hidden_size)
+        self.encoder_cell = nn.Linear(embed_dim, encoder_hidden_size)
+
+        self.rnn = LSTM(
+            input_size=embed_dim,
+            hidden_size=hidden_size,
+            num_layers=num_layers,
+            bidirectional=bidirectional,
+        )
+
+        self.fc = nn.Linear(hidden_size, len(dictionary))
 
     def forward(self, encoder_out):
         # encoder_out -> decoder
-        x = self.classifier(encoder_out['encoder_out'])
+        x = encoder_out['encoder_out']  # seq_len x bsz x embed_dim
 
-        return x
+        (h0, c0) = self.init_hidden(x)
+
+        out, _ = self.rnn(x, (h0, c0))
+        # Sum bidirectional RNN outputs
+        if self.bidirectional:
+            out = out[:, :, :self.hidden_size] + out[:, :, self.hidden_size:]
+        out = self.fc(out)
+
+        return out
+
+    def init_hidden(self, x):
+        mean = torch.mean(x, dim=0)  # bsz x embed_dim
+
+        h0 = self.encoder_hidden(mean)  # bsz x encoder_hidden_size
+        h0 = h0.view(mean.size(0), -1, self.hidden_size)
+        h0 = h0.transpose(0, 1).contiguous()
+        h0 = F.relu6(h0, inplace=True)
+
+        c0 = self.encoder_cell(mean)  # bsz x encoder_hidden_size
+        c0 = c0.view(mean.size(0), -1, self.hidden_size)
+        c0 = c0.transpose(0, 1).contiguous()
+        c0 = F.relu6(c0, inplace=True)
+
+        return (h0, c0)
 
     def get_normalized_probs(self, net_output, log_probs, sample):
         """Get normalized probabilities (or log probs) from a net's output."""
@@ -184,7 +233,17 @@ class CRNNDecoder(FairseqDecoder):
             return utils.softmax(net_output, dim=2)
 
 
+def LSTM(input_size, hidden_size, **kwargs):
+    m = nn.LSTM(input_size, hidden_size, **kwargs)
+    for name, param in m.named_parameters():
+        if 'weight' in name or 'bias' in name:
+            param.data.uniform_(-0.1, 0.1)
+    return m
+
+
 @register_model_architecture('text_recognition', 'crnn')
 def base_architecture(args):
+    args.dropout = getattr(args, 'dropout', 0.1)
     args.backbone = getattr(args, 'backbone', 'densenet_cifar')
     args.pretrained = getattr(args, 'pretrained', False)
+    args.decoder_layers = getattr(args, 'decoder_layers', 1)
