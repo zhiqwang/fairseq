@@ -1,6 +1,5 @@
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 
 from fairseq import utils
 from fairseq.models import (
@@ -59,6 +58,8 @@ class CRNNModel(FairseqEncoderDecoderModel):
         parser.add_argument('--pretrained', action='store_true', help='pretrained')
         parser.add_argument('--decoder-layers', type=int, metavar='N',
                             help='number of decoder layers')
+        parser.add_argument('--decoder-embed-dim', type=int, metavar='N',
+                            help='decoder embedding dimension')
         # fmt: on
 
     @classmethod
@@ -71,6 +72,7 @@ class CRNNModel(FairseqEncoderDecoderModel):
             dictionary=task.target_dictionary,
             embed_dim=encoder.embed_dim,
             num_layers=args.decoder_layers,
+            out_embed_dim=args.decoder_embed_dim,
             bidirectional=True,
         )
         return cls(encoder, decoder)
@@ -174,18 +176,25 @@ class CRNNEncoder(FairseqEncoder):
 class CRNNDecoder(FairseqDecoder):
     """CRNN decoder."""
     def __init__(
-        self, dictionary, embed_dim, hidden_size=512,
+        self, dictionary, embed_dim, hidden_size=512, out_embed_dim=512,
         num_layers=1, attention=None, bidirectional=False,
     ):
         super().__init__(dictionary)
         self.hidden_size = hidden_size
         self.bidirectional = bidirectional
 
-        encoder_hidden_size = hidden_size * num_layers
+        init_layers = num_layers
         if bidirectional:
-            encoder_hidden_size *= 2
-        self.encoder_hidden = nn.Linear(embed_dim, encoder_hidden_size)
-        self.encoder_cell = nn.Linear(embed_dim, encoder_hidden_size)
+            init_layers *= 2
+
+        self.init_hidden_w = nn.Parameter(
+            torch.rand(init_layers, embed_dim, hidden_size)
+        )  # init_layers x embed_dim x hidden_size
+        self.init_hidden_b = nn.Parameter(
+            torch.rand(init_layers, 1, hidden_size)
+        )
+        self.init_cell_w = nn.Parameter(torch.rand_like(self.init_hidden_w))
+        self.init_cell_b = nn.Parameter(torch.rand_like(self.init_hidden_b))
 
         self.rnn = LSTM(
             input_size=embed_dim,
@@ -200,7 +209,7 @@ class CRNNDecoder(FairseqDecoder):
         # encoder_out -> decoder
         x = encoder_out['encoder_out']  # seq_len x bsz x embed_dim
 
-        (h0, c0) = self.init_hidden(x)
+        (h0, c0) = self._init_hidden(x)
 
         out, _ = self.rnn(x, (h0, c0))
         # Sum bidirectional RNN outputs
@@ -210,18 +219,14 @@ class CRNNDecoder(FairseqDecoder):
 
         return out
 
-    def init_hidden(self, x):
+    def _init_hidden(self, x):
         mean = torch.mean(x, dim=0)  # bsz x embed_dim
 
-        h0 = self.encoder_hidden(mean)  # bsz x encoder_hidden_size
-        h0 = h0.view(mean.size(0), -1, self.hidden_size)
-        h0 = h0.transpose(0, 1).contiguous()
-        h0 = F.relu6(h0, inplace=True)
+        h0 = mean @ self.init_hidden_w + self.init_hidden_b  # init_layers x bsz x hidden_size
+        h0 = torch.tanh(h0)
 
-        c0 = self.encoder_cell(mean)  # bsz x encoder_hidden_size
-        c0 = c0.view(mean.size(0), -1, self.hidden_size)
-        c0 = c0.transpose(0, 1).contiguous()
-        c0 = F.relu6(c0, inplace=True)
+        c0 = mean @ self.init_cell_w + self.init_cell_b  # init_layers x bsz x hidden_size
+        c0 = torch.tanh(c0)
 
         return (h0, c0)
 
@@ -247,3 +252,4 @@ def base_architecture(args):
     args.backbone = getattr(args, 'backbone', 'densenet_cifar')
     args.pretrained = getattr(args, 'pretrained', False)
     args.decoder_layers = getattr(args, 'decoder_layers', 1)
+    args.decoder_embed_dim = getattr(args, 'decoder_embed_dim', 512)

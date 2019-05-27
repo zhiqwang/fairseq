@@ -24,10 +24,11 @@ class ImageCTCLossScorer(object):
 
             assert len(tokens) == len(sample['target'])
             hypos = []
-            for token, target in zip(tokens, sample['target']):
+            for token, target, name in zip(tokens, sample['target'], sample['image_name']):
                 hypos.append({
                     'token': token,
                     'target': target.tolist(),
+                    'name': name,
                 })
             hypos_multi.append(hypos)
 

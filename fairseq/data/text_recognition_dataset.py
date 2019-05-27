@@ -10,6 +10,7 @@ def collate(samples):
     images = torch.stack([s['source'] for s in samples])
     targets = [s['target'] for s in samples]
     target_lengths = [s['target_length'] for s in samples]
+    image_names = [s['image_name'] for s in samples]
     ntokens = sum(target_lengths)
     target_lengths = torch.IntTensor(target_lengths)
     # TODO: pin-memory
@@ -19,6 +20,7 @@ def collate(samples):
         'net_input': {
             'image': images,
         },
+        'image_name': image_names,
         'target': targets,
         'target_length': target_lengths,
     }
@@ -56,6 +58,7 @@ class TextRecognitionDataset(FairseqDataset):
 
         return {
             'source': image,
+            'image_name': image_name,
             'target': target,
             'target_length': target_length,
         }

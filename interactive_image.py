@@ -1,6 +1,8 @@
+import os
+import collections
+
 import torch
 
-import collections
 from fairseq import options, tasks, checkpoint_utils, progress_bar, utils
 
 
@@ -23,14 +25,15 @@ def main(args):
 
     # Load ensemble
     print('| loading model(s) from {}'.format(args.path))
+    model_paths = args.path.split(':')
     models, _model_args = checkpoint_utils.load_model_ensemble(
-        args.path.split(':'),
+        model_paths,
         arg_overrides=eval(args.model_overrides),
         task=task,
     )
 
     # Set dictionaries
-    # tgt_dict = task.target_dictionary
+    tgt_dict = task.target_dictionary
 
     # Optimize ensemble for generation
     for model in models:
@@ -61,10 +64,10 @@ def main(args):
         no_progress_bar='simple'
     )
 
-    models_multi = len(models)
     stats = collections.OrderedDict()
-    num_correct = [0 for i in range(models_multi)]
-    num_verified = [0 for i in range(models_multi)]
+    num_correct = [0 for _ in range(len(model_paths))]
+    num_verified = [0 for _ in range(len(model_paths))]
+    wrong_lists = [[] for _ in range(len(model_paths))]
 
     for sample in progress:
         sample = utils.move_to_cuda(sample) if use_cuda else sample
@@ -76,11 +79,26 @@ def main(args):
                 token = hypo['token']
                 if token == target:
                     num_correct[i] += 1
+                else:
+                    wrong_lists[i].append({
+                        'target': target,
+                        'token': token,
+                        'name': hypo['name'],
+                    })
 
-        for i in range(models_multi):
+        for i in range(len(model_paths)):
             stats['acc{}'.format(i + 1)] = num_correct[i] / num_verified[i]
         progress.log(stats, tag='accuracy')
     progress.print(stats, tag='accuracy')
+
+    # print wrong pair
+    for i in range(len(model_paths)):
+        print('| error pair in {} | count {}\n'.format(model_paths[i], len(wrong_lists[i])))
+        for wrong_pair in wrong_lists[i]:
+            image_name = os.path.basename(wrong_pair['name']).split('.')[0]
+            print('name: {}'.format(image_name))
+            print('target: {}'.format(tgt_dict.string(wrong_pair['target'])))
+            print('tokens: {}\n'.format(tgt_dict.string(wrong_pair['token'])))
 
 
 def cli_main():
