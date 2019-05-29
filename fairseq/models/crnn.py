@@ -64,6 +64,10 @@ class CRNNModel(FairseqEncoderDecoderModel):
                             help='decoder embedding dimension')
         parser.add_argument('--no-token-positional-embeddings', default=False, action='store_true',
                             help='if set, disables positional embeddings (outside self attention)')
+        parser.add_argument('--no-token-rnn', default=False, action='store_true',
+                            help='if set, disables rnn layer')
+        parser.add_argument('--no-token-crf', default=False, action='store_true',
+                            help='if set, disables conditional random fields')
         # fmt: on
 
     @classmethod
@@ -80,6 +84,7 @@ class CRNNModel(FairseqEncoderDecoderModel):
             num_layers=args.decoder_layers,
             out_embed_dim=args.decoder_embed_dim,
             bidirectional=True,
+            use_rnn=(not args.no_token_rnn),
         )
         return cls(encoder, decoder)
 
@@ -186,47 +191,53 @@ class CRNNDecoder(FairseqDecoder):
     def __init__(
         self, dictionary, embed_dim, hidden_size=512, out_embed_dim=512,
         num_layers=2, attention=None, bidirectional=True,
+        use_rnn=True, use_crf=False,
     ):
         super().__init__(dictionary)
-        self.hidden_size = hidden_size
-        self.bidirectional = bidirectional
+        self.use_rnn = use_rnn
+        self.use_crf = use_crf
 
-        init_layers = num_layers
-        if bidirectional:
-            init_layers *= 2
+        if self.use_rnn:
+            self.hidden_size = hidden_size
+            self.bidirectional = bidirectional
 
-        self.init_hidden_w = nn.Parameter(
-            torch.rand(init_layers, embed_dim, hidden_size)
-        )  # init_layers x embed_dim x hidden_size
-        self.init_hidden_b = nn.Parameter(
-            torch.rand(init_layers, 1, hidden_size)
-        )  # init_layers x 1 x hidden_size
-        self.init_cell_w = nn.Parameter(torch.rand_like(self.init_hidden_w))
-        self.init_cell_b = nn.Parameter(torch.rand_like(self.init_hidden_b))
+            init_layers = num_layers
+            if bidirectional:
+                init_layers *= 2
 
-        self.rnn = LSTM(
-            input_size=embed_dim,
-            hidden_size=hidden_size,
-            num_layers=num_layers,
-            bidirectional=bidirectional,
-        )
+            self.init_hidden_w = nn.Parameter(
+                torch.rand(init_layers, embed_dim, hidden_size)
+            )  # init_layers x embed_dim x hidden_size
+            self.init_hidden_b = nn.Parameter(
+                torch.rand(init_layers, 1, hidden_size)
+            )  # init_layers x 1 x hidden_size
+            self.init_cell_w = nn.Parameter(torch.rand_like(self.init_hidden_w))
+            self.init_cell_b = nn.Parameter(torch.rand_like(self.init_hidden_b))
 
+            self.rnn = LSTM(
+                input_size=embed_dim,
+                hidden_size=hidden_size,
+                num_layers=num_layers,
+                bidirectional=bidirectional,
+            )
+
+        hidden_size = hidden_size if self.use_rnn else embed_dim
         self.classifier = nn.Linear(hidden_size, len(dictionary))
 
     def forward(self, encoder_out):
         # encoder_out -> decoder
         x = encoder_out['encoder_out']  # seq_len x bsz x embed_dim
 
-        hidden = self._init_hidden(x)
+        if self.use_rnn:
+            hidden = self._init_hidden(x)
+            x, _ = self.rnn(x, hidden)
+            # Sum bidirectional RNN xputs
+            if self.bidirectional:
+                x = x[:, :, :self.hidden_size] + x[:, :, self.hidden_size:]
 
-        out, _ = self.rnn(x, hidden)
-        # Sum bidirectional RNN outputs
-        if self.bidirectional:
-            out = out[:, :, :self.hidden_size] + out[:, :, self.hidden_size:]
+        x = self.classifier(x)
 
-        out = self.classifier(out)
-
-        return out
+        return x
 
     def _init_hidden(self, x):
         mean = torch.mean(x, dim=0)  # bsz x embed_dim
@@ -284,3 +295,5 @@ def base_architecture(args):
     args.decoder_layers = getattr(args, 'decoder_layers', 2)
     args.decoder_embed_dim = getattr(args, 'decoder_embed_dim', 512)
     args.no_token_positional_embeddings = getattr(args, 'no_token_positional_embeddings', False)
+    args.no_token_rnn = getattr(args, 'no_token_rnn', False)
+    args.no_token_crf = getattr(args, 'no_token_crf', False)
