@@ -1,3 +1,5 @@
+import math
+
 import torch
 import torch.nn as nn
 
@@ -60,6 +62,8 @@ class CRNNModel(FairseqEncoderDecoderModel):
                             help='number of decoder layers')
         parser.add_argument('--decoder-embed-dim', type=int, metavar='N',
                             help='decoder embedding dimension')
+        parser.add_argument('--no-token-positional-embeddings', default=False, action='store_true',
+                            help='if set, disables positional embeddings (outside self attention)')
         # fmt: on
 
     @classmethod
@@ -67,7 +71,9 @@ class CRNNModel(FairseqEncoderDecoderModel):
         """Build a new model instance."""
         # make sure that all args are properly defaulted (in case there are any new ones)
         base_architecture(args)
-        encoder = CRNNEncoder(args.backbone, args.pretrained)
+        encoder = CRNNEncoder(
+            args=args,
+        )
         decoder = CRNNDecoder(
             dictionary=task.target_dictionary,
             embed_dim=encoder.embed_dim,
@@ -103,11 +109,14 @@ class CRNNModel(FairseqEncoderDecoderModel):
 
 class CRNNEncoder(FairseqEncoder):
     """CRNN encoder."""
-    def __init__(self, backbone, pretrained):
+    def __init__(self, args):
         super(FairseqEncoder, self).__init__()
-        self.embed_dim = OUTPUT_DIM[backbone]
-        self.position_embeddings = nn.Embedding(self.max_positions(), self.embed_dim)
-        self.features = nn.Sequential(*self.cnn_layers(backbone, pretrained))
+        self.embed_dim = OUTPUT_DIM[args.backbone]
+        self.embed_positions = PositionalEncoding(
+            embedding_dim=self.embed_dim,
+            num_embeddings=self.max_positions(),
+        ) if not args.no_token_positional_embeddings else None
+        self.features = nn.Sequential(*self.cnn_layers(args.backbone, args.pretrained))
         self.avgpool = nn.AdaptiveAvgPool2d((1, None))
 
     def forward(self, images):
@@ -127,9 +136,8 @@ class CRNNEncoder(FairseqEncoder):
         x = self.avgpool(x)
         x = x.permute(3, 0, 1, 2).view(x.size(3), x.size(0), -1)  # seq_len x bsz x embed_dim
 
-        if self.position_embeddings is not None:
-            positions = torch.arange(len(x), device=x.device).unsqueeze(-1)
-            x = x + self.position_embeddings(positions).expand_as(x)
+        if self.embed_positions is not None:
+            x += self.embed_positions(x)
 
         return {
             'encoder_out': x,  # T x B x C
@@ -177,7 +185,7 @@ class CRNNDecoder(FairseqDecoder):
     """CRNN decoder."""
     def __init__(
         self, dictionary, embed_dim, hidden_size=512, out_embed_dim=512,
-        num_layers=1, attention=None, bidirectional=False,
+        num_layers=2, attention=None, bidirectional=True,
     ):
         super().__init__(dictionary)
         self.hidden_size = hidden_size
@@ -192,7 +200,7 @@ class CRNNDecoder(FairseqDecoder):
         )  # init_layers x embed_dim x hidden_size
         self.init_hidden_b = nn.Parameter(
             torch.rand(init_layers, 1, hidden_size)
-        )
+        )  # init_layers x 1 x hidden_size
         self.init_cell_w = nn.Parameter(torch.rand_like(self.init_hidden_w))
         self.init_cell_b = nn.Parameter(torch.rand_like(self.init_hidden_b))
 
@@ -203,19 +211,20 @@ class CRNNDecoder(FairseqDecoder):
             bidirectional=bidirectional,
         )
 
-        self.fc = nn.Linear(hidden_size, len(dictionary))
+        self.classifier = nn.Linear(hidden_size, len(dictionary))
 
     def forward(self, encoder_out):
         # encoder_out -> decoder
         x = encoder_out['encoder_out']  # seq_len x bsz x embed_dim
 
-        (h0, c0) = self._init_hidden(x)
+        hidden = self._init_hidden(x)
 
-        out, _ = self.rnn(x, (h0, c0))
+        out, _ = self.rnn(x, hidden)
         # Sum bidirectional RNN outputs
         if self.bidirectional:
             out = out[:, :, :self.hidden_size] + out[:, :, self.hidden_size:]
-        out = self.fc(out)
+
+        out = self.classifier(out)
 
         return out
 
@@ -246,10 +255,32 @@ def LSTM(input_size, hidden_size, **kwargs):
     return m
 
 
+class PositionalEncoding(nn.Module):
+    "Implement the PE function."
+    def __init__(self, embedding_dim, num_embeddings=128):
+        super().__init__()
+
+        # Compute the positional encodings once in log space.
+        pe = torch.zeros(num_embeddings, embedding_dim)  # embed_num x embed_dim
+        position = torch.arange(num_embeddings, dtype=torch.float).unsqueeze(1)
+        emb = math.log(10000.0) / embedding_dim
+        emb = torch.exp(torch.arange(0, embedding_dim, 2, dtype=torch.float) * -emb)
+        pe[:, 0::2] = torch.sin(position * emb)
+        pe[:, 1::2] = torch.cos(position * emb)
+        self.register_buffer('pe', pe)
+
+    def forward(self, x):
+        out = self.pe[:x.size(0)]  # seq_len x embed_dim
+        out = out.unsqueeze(1)
+        out = out.expand_as(x)
+        return out
+
+
 @register_model_architecture('text_recognition', 'crnn')
 def base_architecture(args):
     args.dropout = getattr(args, 'dropout', 0.1)
     args.backbone = getattr(args, 'backbone', 'densenet_cifar')
     args.pretrained = getattr(args, 'pretrained', False)
-    args.decoder_layers = getattr(args, 'decoder_layers', 1)
+    args.decoder_layers = getattr(args, 'decoder_layers', 2)
     args.decoder_embed_dim = getattr(args, 'decoder_embed_dim', 512)
+    args.no_token_positional_embeddings = getattr(args, 'no_token_positional_embeddings', False)
