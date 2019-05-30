@@ -11,8 +11,8 @@ from fairseq.models import (
     register_model,
     register_model_architecture,
 )
-import fairseq.modules.convolution as convolution
 
+import fairseq.modules.convolution as convolution
 
 # pretrained features
 FEATURES = {}
@@ -28,15 +28,15 @@ OUTPUT_DIM = {
 
 
 @register_model('image_captioning')
-class CRNNModel(FairseqEncoderDecoderModel):
+class ImageCaptioningModel(FairseqEncoderDecoderModel):
     """
     CRNN model from `"An End-to-End Trainable Neural Network for Image-based
     Sequence Recognition and Its Application to Scene Text Recognition" (Shi, et al, 2015)
     <https://arxiv.org/abs/1507.05717>`_.
 
     Args:
-        encoder (CRNNEncoder): the encoder
-        decoder (CRNNDecoder): the decoder
+        encoder (ImageCaptioningEncoder): the encoder
+        decoder (ImageCaptioningDecoder): the decoder
 
     The CRNN model provides the following named architectures and
     command-line arguments:
@@ -75,10 +75,10 @@ class CRNNModel(FairseqEncoderDecoderModel):
         """Build a new model instance."""
         # make sure that all args are properly defaulted (in case there are any new ones)
         base_architecture(args)
-        encoder = CRNNEncoder(
+        encoder = ImageCaptioningEncoder(
             args=args,
         )
-        decoder = CRNNDecoder(
+        decoder = ImageCaptioningDecoder(
             args=args,
             dictionary=task.target_dictionary,
             embed_dim=encoder.embed_dim,
@@ -110,8 +110,8 @@ class CRNNModel(FairseqEncoderDecoderModel):
         return decoder_out
 
 
-class CRNNEncoder(FairseqEncoder):
-    """CRNN encoder."""
+class ImageCaptioningEncoder(FairseqEncoder):
+    """Image captioning encoder."""
     def __init__(self, args):
         super(FairseqEncoder, self).__init__()
         self.embed_dim = OUTPUT_DIM[args.backbone]
@@ -185,7 +185,7 @@ class CRNNEncoder(FairseqEncoder):
         return features
 
 
-class CRNNDecoder(FairseqDecoder):
+class ImageCaptioningDecoder(FairseqDecoder):
     """CRNN decoder."""
     def __init__(
         self, args, dictionary, embed_dim, hidden_size=512,
@@ -261,14 +261,6 @@ class CRNNDecoder(FairseqDecoder):
             return utils.softmax(net_output, dim=2)
 
 
-def LSTM(input_size, hidden_size, **kwargs):
-    m = nn.LSTM(input_size, hidden_size, **kwargs)
-    for name, param in m.named_parameters():
-        if 'weight' in name or 'bias' in name:
-            param.data.uniform_(-0.1, 0.1)
-    return m
-
-
 class PositionalEncoding(nn.Module):
     "Implement the PE function."
     def __init__(self, embedding_dim, num_embeddings=128):
@@ -290,7 +282,15 @@ class PositionalEncoding(nn.Module):
         return out
 
 
-@register_model_architecture('image_captioning', 'crnn')
+def LSTM(input_size, hidden_size, **kwargs):
+    m = nn.LSTM(input_size, hidden_size, **kwargs)
+    for name, param in m.named_parameters():
+        if 'weight' in name or 'bias' in name:
+            param.data.uniform_(-0.1, 0.1)
+    return m
+
+
+@register_model_architecture('image_captioning', 'image_captioning')
 def base_architecture(args):
     args.dropout = getattr(args, 'dropout', 0.1)
     args.backbone = getattr(args, 'backbone', 'densenet_cifar')
@@ -300,3 +300,33 @@ def base_architecture(args):
     args.no_token_positional_embeddings = getattr(args, 'no_token_positional_embeddings', False)
     args.no_token_rnn = getattr(args, 'no_token_rnn', False)
     args.no_token_crf = getattr(args, 'no_token_crf', False)
+
+
+@register_model_architecture('image_captioning', 'decoder_crnn')
+def decoder_crnn(args):
+    args.decoder_layers = getattr(args, 'decoder_layers', 2)
+    args.decoder_embed_dim = getattr(args, 'decoder_embed_dim', 512)
+    args.no_token_positional_embeddings = getattr(args, 'no_token_positional_embeddings', False)
+    args.no_token_rnn = getattr(args, 'no_token_rnn', False)
+    args.no_token_crf = getattr(args, 'no_token_crf', False)
+    base_architecture(args)
+
+
+@register_model_architecture('image_captioning', 'decoder_attention')
+def decoder_attention(args):
+    args.decoder_layers = getattr(args, 'decoder_layers', 2)
+    args.decoder_embed_dim = getattr(args, 'decoder_embed_dim', 512)
+    args.no_token_positional_embeddings = getattr(args, 'no_token_positional_embeddings', False)
+    args.no_token_rnn = getattr(args, 'no_token_rnn', False)
+    args.no_token_crf = getattr(args, 'no_token_crf', False)
+    base_architecture(args)
+
+
+@register_model_architecture('image_captioning', 'decoder_transformer')
+def decoder_transformer(args):
+    args.decoder_layers = getattr(args, 'decoder_layers', 2)
+    args.decoder_embed_dim = getattr(args, 'decoder_embed_dim', 512)
+    args.no_token_positional_embeddings = getattr(args, 'no_token_positional_embeddings', False)
+    args.no_token_rnn = getattr(args, 'no_token_rnn', False)
+    args.no_token_crf = getattr(args, 'no_token_crf', False)
+    base_architecture(args)
