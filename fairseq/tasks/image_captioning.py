@@ -2,14 +2,14 @@ import os
 import torchvision.transforms as transforms
 
 from fairseq.tasks import FairseqTask, register_task
-from fairseq.data import TextRecognitionDataset
-from fairseq.data.text_recognition_dictionary import TextRecognitionDictionary
+from fairseq.data import ImageCaptioningDataset
+from fairseq.data.image_captioning_dictionary import ImageCaptioningDictionary
 
 
-@register_task('text_recognition')
-class TextRecognitionTask(FairseqTask):
+@register_task('image_captioning')
+class ImageCaptioningTask(FairseqTask):
     """
-    Train a text recognition model.
+    Train a image captioning model.
 
     Args:
         tgt_dict (~fairseq.data.Dictionary): dictionary for the target text
@@ -41,7 +41,7 @@ class TextRecognitionTask(FairseqTask):
         """
         tgt_dict = None
         if args.data:
-            tgt_dict = TextRecognitionDictionary.load(os.path.join(args.data, 'dict.txt'))
+            tgt_dict = ImageCaptioningDictionary.load(os.path.join(args.data, 'dict.txt'))
             print('| target dictionary: {} types'.format(len(tgt_dict)))
 
         return cls(args, tgt_dict)
@@ -84,7 +84,7 @@ class TextRecognitionTask(FairseqTask):
         ])
 
         shuffle = True if split == 'train' else False
-        self.datasets[split] = TextRecognitionDataset(
+        self.datasets[split] = ImageCaptioningDataset(
             image_names, targets, self.tgt_dict, tgt_sizes=target_lengths,
             shuffle=shuffle, transform=transform,
         )

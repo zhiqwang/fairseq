@@ -27,7 +27,7 @@ OUTPUT_DIM = {
 }
 
 
-@register_model('text_recognition')
+@register_model('image_captioning')
 class CRNNModel(FairseqEncoderDecoderModel):
     """
     CRNN model from `"An End-to-End Trainable Neural Network for Image-based
@@ -79,12 +79,10 @@ class CRNNModel(FairseqEncoderDecoderModel):
             args=args,
         )
         decoder = CRNNDecoder(
+            args=args,
             dictionary=task.target_dictionary,
             embed_dim=encoder.embed_dim,
-            num_layers=args.decoder_layers,
-            out_embed_dim=args.decoder_embed_dim,
             bidirectional=True,
-            use_rnn=(not args.no_token_rnn),
         )
         return cls(encoder, decoder)
 
@@ -117,12 +115,13 @@ class CRNNEncoder(FairseqEncoder):
     def __init__(self, args):
         super(FairseqEncoder, self).__init__()
         self.embed_dim = OUTPUT_DIM[args.backbone]
+        self.features = nn.Sequential(*self.cnn_layers(args.backbone, args.pretrained))
+        self.avgpool = nn.AdaptiveAvgPool2d((1, None))
+
         self.embed_positions = PositionalEncoding(
             embedding_dim=self.embed_dim,
             num_embeddings=self.max_positions(),
         ) if not args.no_token_positional_embeddings else None
-        self.features = nn.Sequential(*self.cnn_layers(args.backbone, args.pretrained))
-        self.avgpool = nn.AdaptiveAvgPool2d((1, None))
 
     def forward(self, images):
         """
@@ -189,19 +188,17 @@ class CRNNEncoder(FairseqEncoder):
 class CRNNDecoder(FairseqDecoder):
     """CRNN decoder."""
     def __init__(
-        self, dictionary, embed_dim, hidden_size=512, out_embed_dim=512,
-        num_layers=2, attention=None, bidirectional=True,
-        use_rnn=True, use_crf=False,
+        self, args, dictionary, embed_dim, hidden_size=512,
+        attention=None, bidirectional=True,
     ):
         super().__init__(dictionary)
-        self.use_rnn = use_rnn
-        self.use_crf = use_crf
+        self.use_rnn = not args.no_token_rnn
 
         if self.use_rnn:
             self.hidden_size = hidden_size
             self.bidirectional = bidirectional
 
-            init_layers = num_layers
+            init_layers = args.decoder_layers
             if bidirectional:
                 init_layers *= 2
 
@@ -217,12 +214,18 @@ class CRNNDecoder(FairseqDecoder):
             self.rnn = LSTM(
                 input_size=embed_dim,
                 hidden_size=hidden_size,
-                num_layers=num_layers,
+                num_layers=args.decoder_layers,
                 bidirectional=bidirectional,
             )
 
         hidden_size = hidden_size if self.use_rnn else embed_dim
         self.classifier = nn.Linear(hidden_size, len(dictionary))
+
+        # # Matrix of transition parameters.
+        # # Entry i,j is the score of transitioning *to* i *from* j.
+        # self.transitions = nn.Parameter(
+        #     torch.randn(len(dictionary), len(dictionary))
+        # ) if not args.no_token_crf else None
 
     def forward(self, encoder_out):
         # encoder_out -> decoder
@@ -287,7 +290,7 @@ class PositionalEncoding(nn.Module):
         return out
 
 
-@register_model_architecture('text_recognition', 'crnn')
+@register_model_architecture('image_captioning', 'crnn')
 def base_architecture(args):
     args.dropout = getattr(args, 'dropout', 0.1)
     args.backbone = getattr(args, 'backbone', 'densenet_cifar')

@@ -2,9 +2,9 @@ import torch
 from fairseq.data import Dictionary
 
 
-class TextRecognitionDictionary(Dictionary):
+class ImageCaptioningDictionary(Dictionary):
     """
-    Dictionary for Text Recognition tasks. This extends Dictionary by
+    Dictionary for image captioning tasks. This extends Dictionary by
     adding the blank symbol.
     """
     def __init__(self, blank='<blank>'):

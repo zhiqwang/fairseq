@@ -26,7 +26,7 @@ def collate(samples):
     }
 
 
-class TextRecognitionDataset(FairseqDataset):
+class ImageCaptioningDataset(FairseqDataset):
     """A dataset that provides helpers for batching."""
 
     def __init__(
