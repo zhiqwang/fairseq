@@ -6,13 +6,14 @@ import torch.nn as nn
 from fairseq import utils
 from fairseq.models import (
     FairseqEncoder,
-    FairseqDecoder,
+    FairseqIncrementalDecoder,
     FairseqEncoderDecoderModel,
     register_model,
     register_model_architecture,
 )
 
 import fairseq.modules.convolution as convolution
+from fairseq.models.lstm import LSTM
 
 # pretrained features
 FEATURES = {}
@@ -58,16 +59,20 @@ class ImageCaptioningModel(FairseqEncoderDecoderModel):
         parser.add_argument('--backbone', default='densenet_cifar',
                             help='CNN backbone architecture. (default: densenet_cifar)')
         parser.add_argument('--pretrained', action='store_true', help='pretrained')
-        parser.add_argument('--decoder-layers', type=int, metavar='N',
-                            help='number of decoder layers')
         parser.add_argument('--decoder-embed-dim', type=int, metavar='N',
                             help='decoder embedding dimension')
+        parser.add_argument('--decoder-hidden-size', type=int, metavar='N',
+                            help='decoder hidden size')
+        parser.add_argument('--decoder-layers', type=int, metavar='N',
+                            help='number of decoder layers')
         parser.add_argument('--no-token-positional-embeddings', default=False, action='store_true',
                             help='if set, disables positional embeddings (outside self attention)')
         parser.add_argument('--no-token-rnn', default=False, action='store_true',
                             help='if set, disables rnn layer')
         parser.add_argument('--no-token-crf', default=False, action='store_true',
                             help='if set, disables conditional random fields')
+        parser.add_argument('--decoder-bidirectional', action='store_true',
+                            help='make all layers of decoder bidirectional')
         # fmt: on
 
     @classmethod
@@ -79,10 +84,11 @@ class ImageCaptioningModel(FairseqEncoderDecoderModel):
             args=args,
         )
         decoder = ImageCaptioningDecoder(
-            args=args,
             dictionary=task.target_dictionary,
             embed_dim=encoder.embed_dim,
-            bidirectional=True,
+            bidirectional=args.decoder_bidirectional,
+            num_layers=args.decoder_layers,
+            no_token_rnn=args.no_token_rnn,
         )
         return cls(encoder, decoder)
 
@@ -123,6 +129,23 @@ class ImageCaptioningEncoder(FairseqEncoder):
             num_embeddings=self.max_positions(),
         ) if not args.no_token_positional_embeddings else None
 
+        self.decoder_need_rnn = not args.no_token_rnn
+        if self.decoder_need_rnn:
+            hidden_size = args.decoder_hidden_size
+
+            init_layers = args.decoder_layers
+            if args.decoder_bidirectional:
+                init_layers *= 2
+
+            self.init_hidden_w = nn.Parameter(
+                torch.rand(init_layers, self.embed_dim, hidden_size)
+            )  # init_layers x embed_dim x hidden_size
+            self.init_hidden_b = nn.Parameter(
+                torch.rand(init_layers, 1, hidden_size)
+            )  # init_layers x 1 x hidden_size
+            self.init_cell_w = nn.Parameter(torch.rand_like(self.init_hidden_w))
+            self.init_cell_b = nn.Parameter(torch.rand_like(self.init_hidden_b))
+
     def forward(self, images):
         """
         Args:
@@ -140,12 +163,29 @@ class ImageCaptioningEncoder(FairseqEncoder):
         x = self.avgpool(x)
         x = x.permute(3, 0, 1, 2).view(x.size(3), x.size(0), -1)  # seq_len x bsz x embed_dim
 
+        final_hiddens, final_cells = None, None
+
+        if self.decoder_need_rnn:
+            final_hiddens, final_cells = self.init_hidden(x)
+
         if self.embed_positions is not None:
             x += self.embed_positions(x)
 
         return {
-            'encoder_out': x,  # T x B x C
+            'encoder_out': (x, final_hiddens, final_cells),
+            'encoder_padding_mask': None,
         }
+
+    def init_hidden(self, x):
+        mean = torch.mean(x, dim=0)  # bsz x embed_dim
+
+        h0 = mean @ self.init_hidden_w + self.init_hidden_b  # init_layers x bsz x hidden_size
+        h0 = torch.tanh(h0)
+
+        c0 = mean @ self.init_cell_w + self.init_cell_b  # init_layers x bsz x hidden_size
+        c0 = torch.tanh(c0)
+
+        return (h0, c0)
 
     def max_positions(self):
         """Maximum sequence length supported by the encoder."""
@@ -185,55 +225,37 @@ class ImageCaptioningEncoder(FairseqEncoder):
         return features
 
 
-class ImageCaptioningDecoder(FairseqDecoder):
+class ImageCaptioningDecoder(FairseqIncrementalDecoder):
     """CRNN decoder."""
     def __init__(
-        self, args, dictionary, embed_dim, hidden_size=512,
-        attention=None, bidirectional=True,
+        self, dictionary, embed_dim, hidden_size=512,
+        bidirectional=True, num_layers=2, no_token_rnn=False,
     ):
         super().__init__(dictionary)
-        self.use_rnn = not args.no_token_rnn
+        self.need_rnn = not no_token_rnn
+        self.hidden_size = hidden_size
+        self.bidirectional = bidirectional
+        self.num_layers = num_layers
 
-        if self.use_rnn:
-            self.hidden_size = hidden_size
-            self.bidirectional = bidirectional
+        self.rnn = LSTM(
+            input_size=embed_dim,
+            hidden_size=self.hidden_size,
+            num_layers=self.num_layers,
+            bidirectional=self.bidirectional,
+        ) if self.need_rnn else None
 
-            init_layers = args.decoder_layers
-            if bidirectional:
-                init_layers *= 2
-
-            self.init_hidden_w = nn.Parameter(
-                torch.rand(init_layers, embed_dim, hidden_size)
-            )  # init_layers x embed_dim x hidden_size
-            self.init_hidden_b = nn.Parameter(
-                torch.rand(init_layers, 1, hidden_size)
-            )  # init_layers x 1 x hidden_size
-            self.init_cell_w = nn.Parameter(torch.rand_like(self.init_hidden_w))
-            self.init_cell_b = nn.Parameter(torch.rand_like(self.init_hidden_b))
-
-            self.rnn = LSTM(
-                input_size=embed_dim,
-                hidden_size=hidden_size,
-                num_layers=args.decoder_layers,
-                bidirectional=bidirectional,
-            )
-
-        hidden_size = hidden_size if self.use_rnn else embed_dim
+        hidden_size = self.hidden_size if self.need_rnn else embed_dim
         self.classifier = nn.Linear(hidden_size, len(dictionary))
-
-        # # Matrix of transition parameters.
-        # # Entry i,j is the score of transitioning *to* i *from* j.
-        # self.transitions = nn.Parameter(
-        #     torch.randn(len(dictionary), len(dictionary))
-        # ) if not args.no_token_crf else None
 
     def forward(self, encoder_out):
         # encoder_out -> decoder
-        x = encoder_out['encoder_out']  # seq_len x bsz x embed_dim
+        encoder_out = encoder_out['encoder_out']  # seq_len x bsz x embed_dim
 
-        if self.use_rnn:
-            hidden = self._init_hidden(x)
-            x, _ = self.rnn(x, hidden)
+        # get outputs from encoder
+        encoder_outs, encoder_hiddens, encoder_cells = encoder_out[:3]
+
+        if self.rnn is not None:
+            x, _ = self.rnn(encoder_outs, (encoder_hiddens, encoder_cells))
             # Sum bidirectional RNN xputs
             if self.bidirectional:
                 x = x[:, :, :self.hidden_size] + x[:, :, self.hidden_size:]
@@ -241,17 +263,6 @@ class ImageCaptioningDecoder(FairseqDecoder):
         x = self.classifier(x)
 
         return x
-
-    def _init_hidden(self, x):
-        mean = torch.mean(x, dim=0)  # bsz x embed_dim
-
-        h0 = mean @ self.init_hidden_w + self.init_hidden_b  # init_layers x bsz x hidden_size
-        h0 = torch.tanh(h0)
-
-        c0 = mean @ self.init_cell_w + self.init_cell_b  # init_layers x bsz x hidden_size
-        c0 = torch.tanh(c0)
-
-        return (h0, c0)
 
     def get_normalized_probs(self, net_output, log_probs, sample):
         """Get normalized probabilities (or log probs) from a net's output."""
@@ -282,51 +293,29 @@ class PositionalEncoding(nn.Module):
         return out
 
 
-def LSTM(input_size, hidden_size, **kwargs):
-    m = nn.LSTM(input_size, hidden_size, **kwargs)
-    for name, param in m.named_parameters():
-        if 'weight' in name or 'bias' in name:
-            param.data.uniform_(-0.1, 0.1)
-    return m
-
-
 @register_model_architecture('image_captioning', 'image_captioning')
 def base_architecture(args):
     args.dropout = getattr(args, 'dropout', 0.1)
     args.backbone = getattr(args, 'backbone', 'densenet_cifar')
     args.pretrained = getattr(args, 'pretrained', False)
+    args.decoder_embed_dim = getattr(args, 'decoder_embed_dim', 512)
+    args.decoder_hidden_size = getattr(args, 'decoder_hidden_size', args.decoder_embed_dim)
     args.decoder_layers = getattr(args, 'decoder_layers', 2)
     args.decoder_embed_dim = getattr(args, 'decoder_embed_dim', 512)
     args.no_token_positional_embeddings = getattr(args, 'no_token_positional_embeddings', False)
     args.no_token_rnn = getattr(args, 'no_token_rnn', False)
-    args.no_token_crf = getattr(args, 'no_token_crf', False)
+    args.no_token_crf = getattr(args, 'no_token_crf', True)
+    args.decoder_bidirectional = getattr(args, 'decoder_bidirectional', False)
 
 
 @register_model_architecture('image_captioning', 'decoder_crnn')
 def decoder_crnn(args):
-    args.decoder_layers = getattr(args, 'decoder_layers', 2)
-    args.decoder_embed_dim = getattr(args, 'decoder_embed_dim', 512)
-    args.no_token_positional_embeddings = getattr(args, 'no_token_positional_embeddings', False)
-    args.no_token_rnn = getattr(args, 'no_token_rnn', False)
-    args.no_token_crf = getattr(args, 'no_token_crf', False)
+    args.decoder_bidirectional = getattr(args, 'decoder_bidirectional', True)
     base_architecture(args)
 
 
 @register_model_architecture('image_captioning', 'decoder_attention')
 def decoder_attention(args):
-    args.decoder_layers = getattr(args, 'decoder_layers', 2)
-    args.decoder_embed_dim = getattr(args, 'decoder_embed_dim', 512)
-    args.no_token_positional_embeddings = getattr(args, 'no_token_positional_embeddings', False)
-    args.no_token_rnn = getattr(args, 'no_token_rnn', False)
-    args.no_token_crf = getattr(args, 'no_token_crf', False)
-    base_architecture(args)
-
-
-@register_model_architecture('image_captioning', 'decoder_transformer')
-def decoder_transformer(args):
-    args.decoder_layers = getattr(args, 'decoder_layers', 2)
-    args.decoder_embed_dim = getattr(args, 'decoder_embed_dim', 512)
-    args.no_token_positional_embeddings = getattr(args, 'no_token_positional_embeddings', False)
     args.no_token_rnn = getattr(args, 'no_token_rnn', False)
     args.no_token_crf = getattr(args, 'no_token_crf', False)
     base_architecture(args)
