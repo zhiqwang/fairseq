@@ -2,28 +2,59 @@ import numpy as np
 import torch
 from fairseq.data.data_utils import default_loader
 
-from . import FairseqDataset
+from . import data_utils, FairseqDataset
 
 
-def collate(samples):
+def collate(
+    samples, pad_idx, eos_idx, left_pad=False,
+    input_feeding=True, use_ctc_loss=False,
+):
     """collate samples of images and targets."""
+    if len(samples) == 0:
+        return {}
+
+    def merge(key, left_pad, move_eos_to_beginning=False):
+        return data_utils.collate_tokens(
+            [s[key] for s in samples],
+            pad_idx, eos_idx, left_pad, move_eos_to_beginning,
+        )
+
     images = torch.stack([s['source'] for s in samples])
-    targets = [s['target'] for s in samples]
-    target_lengths = [s['target_length'] for s in samples]
+
+    prev_output_tokens = None
+
+    if use_ctc_loss:
+        targets = [s['target'] for s in samples]
+    else:
+        targets = merge('target', left_pad=left_pad)
+        if input_feeding:
+            # we create a shifted version of targets for feeding the
+            # previous output token(s) into the next decoder step
+            prev_output_tokens = merge(
+                'target',
+                left_pad=left_pad,
+                move_eos_to_beginning=True,
+            )
+
+    tgt_lengths = [s['target_length'] for s in samples]
     image_names = [s['image_name'] for s in samples]
-    ntokens = sum(target_lengths)
-    target_lengths = torch.IntTensor(target_lengths)
+    ntokens = sum(tgt_lengths)
+    tgt_lengths = torch.IntTensor(tgt_lengths)
+
     # TODO: pin-memory
-    return {
-        'batch_size': len(samples),
+    batch = {
+        'nsentences': len(samples),
         'ntokens': ntokens,
         'net_input': {
             'image': images,
         },
         'image_name': image_names,
         'target': targets,
-        'target_length': target_lengths,
+        'target_length': tgt_lengths,
     }
+    if prev_output_tokens is not None:
+        batch['net_input']['prev_output_tokens'] = prev_output_tokens
+    return batch
 
 
 class ImageCaptioningDataset(FairseqDataset):
@@ -32,6 +63,8 @@ class ImageCaptioningDataset(FairseqDataset):
     def __init__(
         self, src, tgt, tgt_dict, tgt_sizes=None,
         shuffle=True, transform=None, loader=default_loader,
+        use_ctc_loss=False, left_pad=False,
+        input_feeding=True, append_eos_to_target=False,
     ):
         self.src = src
         self.tgt = tgt
@@ -40,6 +73,10 @@ class ImageCaptioningDataset(FairseqDataset):
         self.transform = transform
         self.loader = loader
         self.shuffle = shuffle
+        self.use_ctc_loss = use_ctc_loss
+        self.left_pad = left_pad
+        self.input_feeding = input_feeding
+        self.append_eos_to_target = append_eos_to_target
 
     def __len__(self):
         return len(self.src)
@@ -51,21 +88,35 @@ class ImageCaptioningDataset(FairseqDataset):
         if self.transform is not None:
             image = self.transform(image)
 
-        target = self.tgt[index]
-        target_length = self.tgt_sizes[index]
+        tgt_item = self.tgt[index]
+        tgt_length = self.tgt_sizes[index]
         # Convert label to a numeric ID.
-        target = torch.IntTensor([self.tgt_dict.index(i) for i in target])
+        tgt_item = torch.IntTensor([self.tgt_dict.index(i) for i in tgt_item])
+        # Append EOS to end of tgt sentence if it does not have an EOS
+        if self.append_eos_to_target:
+            tgt_item = tgt_item.to(torch.int64)
+            eos = self.tgt_dict.eos()
+            if self.tgt and self.tgt[index][-1] != eos:
+                tgt_item = torch.cat([tgt_item, torch.LongTensor([eos])])
 
         return {
             'source': image,
             'image_name': image_name,
-            'target': target,
-            'target_length': target_length,
+            'target': tgt_item,
+            'target_length': tgt_length,
         }
 
     def collater(self, samples):
         """Merge a list of samples to form a mini-batch."""
-        return collate(samples)
+        pad_idx = None if self.use_ctc_loss is True else self.tgt_dict.pad()
+        eos_idx = None if self.use_ctc_loss is True else self.tgt_dict.eos()
+        left_pad = self.left_pad
+        input_feeding = self.input_feeding
+
+        return collate(
+            samples, pad_idx=pad_idx, eos_idx=eos_idx, left_pad=left_pad,
+            input_feeding=input_feeding, use_ctc_loss=self.use_ctc_loss,
+        )
 
     def ordered_indices(self):
         """

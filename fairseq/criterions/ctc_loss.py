@@ -22,11 +22,11 @@ class CTCLossCriterion(FairseqCriterion):
         """
         net_output = model(**sample['net_input'])
         loss = self.compute_loss(model, net_output, sample, reduction=reduction)
-        sample_size = sample['batch_size'] if self.args.sentence_avg else sample['ntokens']
+        sample_size = sample['nsentences'] if self.args.sentence_avg else sample['ntokens']
         logging_output = {
             'loss': loss.item(),
             'ntokens': sample['ntokens'],
-            'nsentences': sample['batch_size'],
+            'nsentences': sample['nsentences'],
             'sample_size': sample_size,
         }
         return loss, sample_size, logging_output
@@ -38,7 +38,7 @@ class CTCLossCriterion(FairseqCriterion):
         log_probs = model.get_normalized_probs(net_output, log_probs=True)
         targets = torch.cat(sample['target']).cpu()  # Expected targets to have CPU Backend
         target_lengths = sample['target_length']
-        input_lengths = torch.full((sample['batch_size'],), log_probs.size(0), dtype=torch.int32)
+        input_lengths = torch.full((sample['nsentences'],), log_probs.size(0), dtype=torch.int32)
         loss = F.ctc_loss(log_probs, targets, input_lengths, target_lengths,
                           blank=self.blank_idx, reduction=reduction,
                           zero_infinity=zero_infinity)

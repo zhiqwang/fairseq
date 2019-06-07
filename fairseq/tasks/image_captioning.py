@@ -3,7 +3,7 @@ import torchvision.transforms as transforms
 
 from fairseq.tasks import FairseqTask, register_task
 from fairseq.data import ImageCaptioningDataset
-from fairseq.data.image_captioning_dictionary import ImageCaptioningDictionary
+from fairseq.data.image_captioning_dictionary import ImageCaptioningDictionary, Dictionary
 
 
 @register_task('image_captioning')
@@ -39,16 +39,26 @@ class ImageCaptioningTask(FairseqTask):
         Args:
             args (argparse.Namespace): parsed command-line arguments
         """
-        tgt_dict = None
-        if args.data:
-            tgt_dict = ImageCaptioningDictionary.load(os.path.join(args.data, 'dict.txt'))
-            print('| target dictionary: {} types'.format(len(tgt_dict)))
+        use_ctc_loss = True if args.criterion == 'ctc_loss' else False
+        tgt_dict = cls.load_dictionary(os.path.join(args.data, 'dict.txt'), use_ctc_loss)
+        print('| target dictionary: {} types'.format(len(tgt_dict)))
 
         return cls(args, tgt_dict)
 
     def __init__(self, args, tgt_dict):
         super().__init__(args)
         self.tgt_dict = tgt_dict
+
+    @classmethod
+    def load_dictionary(cls, filename, use_ctc_loss):
+        """Load the dictionary from the filename
+
+        Args:
+            filename (str): the filename
+        """
+        if use_ctc_loss:
+            return ImageCaptioningDictionary.load(filename)
+        return Dictionary.load(filename)
 
     def load_dataset(self, split, **kwargs):
         """Load a given dataset split.
@@ -84,14 +94,18 @@ class ImageCaptioningTask(FairseqTask):
         ])
 
         shuffle = True if split == 'train' else False
+        append_eos_to_target = False if self.args.criterion == 'ctc_loss' else True
+        use_ctc_loss = True if self.args.criterion == 'ctc_loss' else False
         self.datasets[split] = ImageCaptioningDataset(
             image_names, targets, self.tgt_dict, tgt_sizes=target_lengths,
-            shuffle=shuffle, transform=transform,
+            shuffle=shuffle, transform=transform, use_ctc_loss=use_ctc_loss,
+            input_feeding=True, append_eos_to_target=append_eos_to_target,
         )
 
     def build_generator(self, args):
         from fairseq.image_scorer import ImageCTCLossScorer
-        return ImageCTCLossScorer(self.target_dictionary)
+        if args.criterion == 'ctc_loss':
+            return ImageCTCLossScorer(self.target_dictionary)
 
     def max_positions(self):
         """Return the max input length allowed by the task."""

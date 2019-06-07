@@ -103,6 +103,7 @@ def main(args):
 
 def cli_main():
     parser = options.get_generation_parser(interactive=True)
+    options.add_model_args(parser)
     args = options.parse_args_and_arch(parser)
     main(args)
 

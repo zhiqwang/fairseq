@@ -312,10 +312,3 @@ def base_architecture(args):
 def decoder_crnn(args):
     args.decoder_bidirectional = getattr(args, 'decoder_bidirectional', True)
     base_architecture(args)
-
-
-@register_model_architecture('image_captioning', 'decoder_attention')
-def decoder_attention(args):
-    args.no_token_rnn = getattr(args, 'no_token_rnn', False)
-    args.no_token_crf = getattr(args, 'no_token_crf', False)
-    base_architecture(args)
