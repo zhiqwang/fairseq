@@ -1,7 +1,7 @@
 import torch
 
 
-class ImageCTCLossScorer(object):
+class ImageCaptioningScorer(object):
     """Scores the target for a given source image."""
 
     def __init__(self, tgt_dict, raw=False, strings=False):
@@ -25,11 +25,11 @@ class ImageCTCLossScorer(object):
             assert len(tokens) == len(sample['target'])
             hypos = []
             for token, target, name in zip(tokens, sample['target'], sample['image_name']):
-                hypos.append({
-                    'token': token,
+                hypos.append([{
+                    'tokens': token,
                     'target': target.tolist(),
                     'name': name,
-                })
+                }])
             hypos_multi.append(hypos)
 
         return hypos_multi

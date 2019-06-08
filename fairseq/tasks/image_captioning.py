@@ -103,9 +103,12 @@ class ImageCaptioningTask(FairseqTask):
         )
 
     def build_generator(self, args):
-        from fairseq.image_scorer import ImageCTCLossScorer
         if args.criterion == 'ctc_loss':
-            return ImageCTCLossScorer(self.target_dictionary)
+            from fairseq.image_captioning_scorer import ImageCaptioningScorer
+            return ImageCaptioningScorer(self.target_dictionary)
+        else:
+            from fairseq.sequence_scorer import SequenceScorer
+            return SequenceScorer(self.target_dictionary)
 
     def max_positions(self):
         """Return the max input length allowed by the task."""

@@ -37,18 +37,18 @@ def collate(
             )
 
     tgt_lengths = [s['target_length'] for s in samples]
-    image_names = [s['image_name'] for s in samples]
+    id = torch.LongTensor([s['id'] for s in samples])
     ntokens = sum(tgt_lengths)
     tgt_lengths = torch.IntTensor(tgt_lengths)
 
     # TODO: pin-memory
     batch = {
+        'id': id,
         'nsentences': len(samples),
         'ntokens': ntokens,
         'net_input': {
             'image': images,
         },
-        'image_name': image_names,
         'target': targets,
         'target_length': tgt_lengths,
     }
@@ -100,8 +100,8 @@ class ImageCaptioningDataset(FairseqDataset):
                 tgt_item = torch.cat([tgt_item, torch.LongTensor([eos])])
 
         return {
+            'id': index,
             'source': image,
-            'image_name': image_name,
             'target': tgt_item,
             'target_length': tgt_length,
         }
