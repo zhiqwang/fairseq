@@ -124,7 +124,7 @@ def main(args):
                     num_correct += 1
 
                 if not args.quiet:
-                    print('H-{}\t{}\t{}'.format(sample_id, hypo['score'], hypo_str))
+                    print('H-{}\t{}\t{}'.format(sample_id, hypo_str, hypo['score']))
                     print('P-{}\t{}'.format(
                         sample_id,
                         ' '.join(map(

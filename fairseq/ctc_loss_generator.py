@@ -1,7 +1,7 @@
 import torch
 
 
-class ImageCaptioningScorer(object):
+class CTCLossGenerator(object):
     """Scores the target for a given source image."""
 
     def __init__(self, tgt_dict, raw=False, strings=False):

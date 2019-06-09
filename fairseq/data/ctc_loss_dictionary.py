@@ -2,7 +2,7 @@ import torch
 from fairseq.data import Dictionary
 
 
-class ImageCaptioningDictionary(Dictionary):
+class CTCLossDictionary(Dictionary):
     """
     Dictionary for image captioning tasks. This extends Dictionary by
     adding the blank symbol.

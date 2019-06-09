@@ -5,7 +5,7 @@ from fairseq.models import (
 )
 
 from fairseq import options
-from fairseq.models.image_captioning import ImageCaptioningEncoder
+from fairseq.models.image_captioning_encoder import ImageCaptioningEncoder
 from fairseq.models.lstm import LSTMDecoder
 
 
@@ -14,7 +14,7 @@ class ImageCaptioningAttnModel(FairseqEncoderDecoderModel):
     """
     Args:
         encoder (ImageCaptioningEncoder): the encoder
-        decoder (ImageCaptioningDecoder): the decoder
+        decoder (LSTMDecoder): the decoder
 
     The CRNN model provides the following named architectures and
     command-line arguments:
@@ -90,7 +90,7 @@ class ImageCaptioningAttnModel(FairseqEncoderDecoderModel):
         )
         return cls(encoder, decoder)
 
-    def forward(self, image, prev_output_tokens, **kwargs):
+    def forward(self, src_tokens, prev_output_tokens, **kwargs):
         """
         Run the forward pass for an encoder-decoder model.
 
@@ -98,22 +98,22 @@ class ImageCaptioningAttnModel(FairseqEncoderDecoderModel):
         encoder output and previous decoder outputs (i.e., input feeding/teacher
         forcing) to the decoder to produce the next outputs::
 
-            encoder_out = self.encoder(image)
+            encoder_out = self.encoder(src_tokens)
             return self.decoder(encoder_out)
 
         Args:
-            image (Tensor): tokens in the source image of shape
+            src_tokens (Tensor): tokens in the source image of shape
                 `(batch, channel, img_h, img_w)`
 
         Returns:
             the decoder's output, typically of shape `(tgt_len, batch, vocab)`
         """
-        encoder_out = self.encoder(image)
+        encoder_out = self.encoder(src_tokens, **kwargs)
         decoder_out = self.decoder(prev_output_tokens, encoder_out=encoder_out, **kwargs)
 
         return decoder_out
 
-    def extract_features(self, image, prev_output_tokens, **kwargs):
+    def extract_features(self, src_tokens, prev_output_tokens, **kwargs):
         """
         Similar to *forward* but only return features.
 
@@ -122,7 +122,7 @@ class ImageCaptioningAttnModel(FairseqEncoderDecoderModel):
                 - the decoder's features of shape `(batch, tgt_len, embed_dim)`
                 - a dictionary with any model-specific outputs
         """
-        encoder_out = self.encoder(image, **kwargs)
+        encoder_out = self.encoder(src_tokens, **kwargs)
         features = self.decoder.extract_features(prev_output_tokens, encoder_out=encoder_out, **kwargs)
         return features
 

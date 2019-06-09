@@ -47,7 +47,7 @@ def collate(
         'nsentences': len(samples),
         'ntokens': ntokens,
         'net_input': {
-            'image': images,
+            'src_tokens': images,
         },
         'target': targets,
         'target_length': tgt_lengths,
